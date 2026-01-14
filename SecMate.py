@@ -12,6 +12,9 @@ from langchain_core.messages import HumanMessage
 # Importamos el grafo
 from agent_graph import graph
 
+# Importamos las funciones / Tools necesarias
+from tools import get_file_hash
+
 # Cargamos las claves desde el archivo .env para no exponerlas en el código
 load_dotenv('.env') 
 
@@ -23,7 +26,36 @@ if not telegram_token:
     exit()
 
 # ==========================================
-# INTERFAZ DE TELEGRAM (LA CAPA DE VISTA)
+# FUNCIONES AUXILIARES
+# ==========================================
+
+async def process_with_graph(update: Update, text_input: str):
+    """
+    Función auxiliar que envía cualquier texto al Grafo y gestiona la respuesta.
+    Se usa tanto para mensajes de texto normales como para archivos (tras calcular su hash).
+    """
+    try:
+        # Convertimos a formato LangChain
+        input_message = HumanMessage(content=text_input)
+        
+        # Ejecutamos el grafo
+        final_state = graph.invoke({'messages': [input_message]})
+        bot_response = final_state['messages'][-1].content
+        
+        # Gestión de límites de Telegram (4096 caracteres)
+        max_length = 4000
+        if len(bot_response) > max_length:
+            for i in range(0, len(bot_response), max_length):
+                await update.message.reply_text(bot_response[i:i+max_length])
+        else:
+            await update.message.reply_text(bot_response)
+            
+    except Exception as e:
+        print(f"❌ Error en el grafo: {e}")
+        await update.message.reply_text("Lo siento, ha ocurrido un error interno al procesar tu solicitud.")
+
+# ==========================================
+# HANDLERS DE TELEGRAM
 # ==========================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -31,42 +63,61 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text('¡Hola! Soy SecMate 1.0. ¿En qué puedo ayudarte hoy?')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Maneja cualquier mensaje de texto entrante.
-    Actúa como puente entre Telegram y LangGraph.
-    """
+    """ Maneja texto normal enviado por el usuario. """
+
     user_text = update.message.text
     print(f"📩 Usuario dice: {user_text}")
 
-    # Convertimos el texto de Telegram a un formato que entienda LangChain
-    input_message = HumanMessage(content=user_text)
+    await process_with_graph(update, user_text)
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """"
+    Maneja la subida de archivos.
+    1. Descarga -> 2. Calcula el Hash -> 3. Borra el archivo -> 4. Envía el hash al grafo.
+    """
+
+    # Aviso inicial
+    status_message = await update.message.reply_text("📥 Archivo recibido. Procesando...")
+
+    download_path = None # Variable para guardar la ruta
 
     try:
-        # Ejecutamos el grafo con el mensaje del usuario
-        final_state = graph.invoke({'messages': [input_message]})
+        # 1. Obtener info del archivo
+        file = await update.message.document.get_file()
+        file_name = update.message.document.file_name
+
+        # 2. Descargar el archivo a una ruta temporal
+        download_path = f"temp_{file_name}"
+        await file.download_to_drive(download_path)
+
+        # 3. Calcular el Hash (Usando la funcion de tools.py)
+        file_hash = get_file_hash(download_path)
+
+        # 4. Limpieza: Borrar el archivo temporal
+        if os.path.exists(download_path):
+            os.remove(download_path)
         
-        # Extraemos la última respuesta generada por la IA
-        bot_response = final_state['messages'][-1].content
+        if file_hash:
+            await status_message.edit_text(f"✅ Hash calculado: `{file_hash}`\n🕵️‍♂️ Consultando al Analista...")
 
-        # --- GESTIÓN DE LÍMITES DE TELEGRAM ---
-        # Telegram tiene un límite de 4096 caracteres.
-        # Cortamos en 4000 para dejar margen a negritas y formato Markdown.
-        max_length = 4000 
+            # 5. Creamos un prompt simulando que el usuario envía el hash
+            simulated_user_input = f"Analiza el hash: {file_hash} del archivo llamado {file_name}"
 
-        if len(bot_response) > max_length:
-            # Algoritmo de segmentación: Divide el mensaje en trozos de 4000 caracteres
-            for i in range(0, len(bot_response), max_length):
-                await update.message.reply_text(bot_response[i:i+max_length])
+            # Enviamos este texto al Grafo
+            await process_with_graph(update, simulated_user_input)
         else:
-            # Envío normal
-            await update.message.reply_text(bot_response)
-
+            await status_message.edit_text("❌ No se pudo calcular el hash del archivo.")
+    
     except Exception as e:
-        print(f"❌ Error en el sistema: {e}")
-        await update.message.reply_text("Lo siento, ha ocurrido un error interno al procesar tu solicitud.")
-
+        print(f"❌ Error al procesar el archivo: {e}")
+        # Limpiamos en caso de error
+        if download_path and os.path.exists(download_path):
+            os.remove(download_path)
+        await status_message.edit_text("❌ Ha ocurrido un error al procesar el archivo.")
+        
+        
 # ==========================================
-# 5. PUNTO DE ENTRADA (MAIN)
+# PUNTO DE ENTRADA (MAIN)
 # ==========================================
 if __name__ == "__main__":
     # Construimos la aplicación de Telegram
