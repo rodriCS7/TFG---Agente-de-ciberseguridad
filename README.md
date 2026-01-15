@@ -5,4 +5,4 @@ Cuenta con Tools para que el agente analista se comunique con la API de virustot
 
 Este es el diagrama de la arquitectura:
 
-![Arquitectura](diagrama arquitectura TFG.jpg)
+![Arquitectura](diagramaArquitecturaTFG.jpg)
