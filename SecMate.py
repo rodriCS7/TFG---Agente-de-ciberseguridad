@@ -1,5 +1,12 @@
+import datetime
 import os
 from dotenv import load_dotenv
+from datetime import datetime
+
+# Imports para el SDK de google
+from google import genai
+from google.genai import types
+
 # Librerías de Telegram: Gestor de actualizaciones, filtros y contextos
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
@@ -10,7 +17,7 @@ from langchain_core.messages import HumanMessage
 
 # --- IMPORTACIONES PROPIAS (Módulos del TFG) ---
 from agent_graph import graph      # El cerebro (Grafo de LangGraph)
-from tools import get_file_hash    # Herramienta para cálculo SHA-256
+from tools import get_file_hash, get_new_critical_cves    # Herramienta para cálculo SHA-256 y consulta de CVEs recientes
 
 # ==========================================
 # 1. CONFIGURACIÓN E INICIALIZACIÓN
@@ -19,10 +26,15 @@ from tools import get_file_hash    # Herramienta para cálculo SHA-256
 # Cargar variables de entorno (Token) para no exponer secretos en el código
 load_dotenv('.env') 
 telegram_token = os.getenv('TELEGRAM_BOT_TOKEN')
+google_api_key = os.getenv('GOOGLE_API_KEY')
 
 # Validación de seguridad: Sin token no podemos arrancar
 if not telegram_token:
     print("❌ Error crítico: Falta la variable TELEGRAM_BOT_TOKEN en .env")
+    exit()
+
+if not google_api_key:
+    print("❌ Error crítico: Falta la variable GOOGLE_API_KEY en .env")
     exit()
 
 # ==========================================
@@ -204,6 +216,118 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Responde al comando /start"""
     await update.message.reply_text('¡Hola! Soy SecMate. Consúltame dudas sobre ciberseguridad o envíame archivos para que los analice.')
 
+
+# === Sistema de alertas automáticas (NIST CVEs) ===
+
+async def check_new_cves (context: ContextTypes.DEFAULT_TYPE):
+    """
+    Tarea programada: 
+    1. Consulta la API del NIST.
+    2. Si hay CVEs críticos, llama DIRECTAMENTE a Gemini (Bypass del Grafo).
+    3. Envía la alerta formateada.
+    """
+
+    job = context.job
+    chat_id = job.data or job.chat_id
+    
+    print(f"⏰ Ejecutando escaneo de vulnerabilidades para chat {chat_id}...")
+
+    # 1. Buscamos datos crudos del NIST
+    new_cves_text = get_new_critical_cves()
+    
+    # Obtienes la fecha actual en formato día/mes/año (ej: 05/02/2026) para incluirla en el boletín de seguridad.
+    fecha_actual = datetime.now().strftime("%d/%m/%Y")
+    
+    if new_cves_text:
+        print(f"   🆕 Nuevas vulnerabilidades críticas encontradas.")
+        
+        # 2. Definimos el Prompt Específico
+        prompt_boletin_seguridad = (
+            f"Actúa como un Analista de Ciberinteligencia. Tu tarea es resumir los CVEs críticos del NIST para un canal de Telegram.\n"
+            f"Tus lectores son técnicos, pero necesitan lectura rápida.\n\n"
+
+            f"DATOS DEL NIST (INPUT):\n"
+            f"{new_cves_text}\n\n"
+
+            f"REGLAS DE FORMATO CRÍTICAS (PARA EVITAR ERRORES DE PARSEO):\n"
+            f"1. Título: Usa '🛡️ **Boletín de Seguridad - {fecha_actual}**' al inicio.\n"
+            f"2. Estructura por CVE: Usa un formato de lista limpia.\n"
+            f"3. EL ID del CVE debe ir SIEMPRE en bloque de código monoespaciado (con acento grave `). Ejemplo: `CVE-2024-0001`.\n"
+            f"4. NO uses caracteres especiales de Markdown (como corchetes [], paréntesis () o guiones bajos _) fuera de los bloques de código.\n"
+            f"5. NO pongas enlaces con formato markdown [texto](url). Pon la URL tal cual si es necesaria.\n\n"
+
+            f"PLANTILLA DE RESPUESTA A SEGUIR:\n"
+            f"🔸 `CVE-XXXX-XXXX` | **Nombre del Software/Producto**\n"
+            f"Impacto: Breve resumen del daño (RCE, DoS, Escalada).\n"
+            f"CVSS: `9.8` (si está disponible)\n\n"
+            f"(Repetir para cada CVE...)\n\n"
+            f"⚠️ _Parchear inmediatamente._"
+        )
+        
+        try:
+            # 3. LLAMADA DIRECTA CON NUEVO SDK + BYPASS SEGURIDAD
+            # Usamos .aio para llamadas asíncronas
+
+            client = genai.Client(api_key=google_api_key)
+
+
+            response = await client.aio.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt_boletin_seguridad,
+                config=types.GenerateContentConfig(
+                    safety_settings=[
+                        types.SafetySetting(
+                            category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                            threshold="BLOCK_NONE"
+                        )
+                    ]
+                )
+            )
+            
+            bot_response = response.text
+            
+            # 4. ENVÍO SEGURO
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id, 
+                    text=bot_response, 
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception as telegram_error:
+                print(f"⚠️ Falló el Markdown ({telegram_error}). Enviando plano.")
+                await context.bot.send_message(
+                    chat_id=chat_id, 
+                    text=bot_response
+                )
+
+        except Exception as e:
+            print(f"❌ Error conectando con Gemini Directo: {e}")
+    else:
+        print(f"✅ Sin novedades críticas para {chat_id}.")
+
+
+async def subscribe (update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Comando /subscribe para activar el boletin de seguridad diario"""
+    chat_id = update.effective_message.chat_id
+
+    # Limpiamos trabajos anteriores
+    current_jobs = context.job_queue.get_jobs_by_name(str(chat_id))
+    for job in current_jobs:
+        job.schedule_removal()
+
+    # Programamos: Cada 24 horas (86400 segundos)
+    # first=5: La primera comprobación se hace a los 5 segundos
+    context.job_queue.run_repeating(
+        check_new_cves,
+        interval = 86400,
+        first = 5,
+        chat_id = chat_id,
+        data = chat_id,
+        name = str(chat_id)
+    )
+
+    await update.message.reply_text("✅ Has sido suscrito al boletín diario de vulnerabilidades críticas. Recibirás alertas cada 24 horas.")
+
 # ==========================================
 # 5. PUNTO DE ENTRADA (MAIN)
 # ==========================================
@@ -213,6 +337,7 @@ if __name__ == "__main__":
 
     # 1. Manejador de Comandos (/start)
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("subscribe", subscribe))
     
     # 2. MANEJADOR MÁGICO
     # filters.ALL captura todo. ~filters.COMMAND excluye comandos (para que /start no entre aquí).

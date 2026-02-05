@@ -147,18 +147,14 @@ def analyst_node(state: State):
 
     # 3. Preparación del Prompt para el Analista (Promt Engineering)
     full_analysis_prompt = f"""
-    {ANALYST_SYSTEM_PROMPT}
+        {ANALYST_SYSTEM_PROMPT}
 
-    --- 1. EVIDENCIA CONTEXTUAL (MENSAJE DEL USUARIO) ---
-    "{user_text}"
+        --- INPUTS DEL CASO ---
+        USER_CONTEXT: "{user_text}"
 
-    --- 2. EVIDENCIA TÉCNICA ({analysis_type}) ---
-    Datos extraídos de VirusTotal (JSON):
-    {json.dumps(vt_data, indent=2)}
-
-    --- INSTRUCCIONES ADICIONALES ---
-    Cruza la información para dar un veredicto. Si VT dice limpio pero el texto es claramente phishing, alerta de riesgo por Ingeniería Social.
-    """
+        REPORT_VT (Tipo: {analysis_type}):
+        {json.dumps(vt_data, indent=2)}
+        """
 
     # 4. Generaración de Respuesta con Cliente Nativo (Bypass de Seguridad)
     try:

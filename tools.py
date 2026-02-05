@@ -4,6 +4,7 @@ import hashlib
 import requests
 import base64
 from dotenv import load_dotenv
+from datetime import datetime, timedelta, timezone
 
 load_dotenv('.env')
 VT_KEY = os.getenv('VT_API_KEY')
@@ -153,3 +154,52 @@ def extract_url_from_text(text):
         return url.strip()
         
     return None
+
+
+def get_new_critical_cves():
+    """
+    Consulta la API de NVD para obtener las vulnerabilidades críticas (CVSS >= 9.0) publicadas en las últimas 24 horas.
+    """
+    try:
+        # 1. Calcular rango de fechas (últimas 24 horas)
+        now = datetime.now(timezone.utc)
+        yesterday = now - timedelta(days=1)
+
+        # Formato NIST: YYYY-MM-DDTHH:MM:SS.SSS
+        pub_start_date = yesterday.strftime('%Y-%m-%dT%H:%M:%S.000')
+        pub_end_date = now.strftime('%Y-%m-%dT%H:%M:%S.000')
+
+        # Filtramos por severidad CRÍTICA (CVSS >= 9.0) y por fecha de publicación
+        url = f"https://services.nvd.nist.gov/rest/json/cves/2.0?pubStartDate={pub_start_date}&pubEndDate={pub_end_date}&cvssV3Severity=CRITICAL"
+
+        response = requests.get(url, timeout=10)
+
+        if response.status_code == 200:
+            data = response.json()
+            total_results = data.get('totalResults', 0)
+
+            if total_results == 0:
+                return None
+            
+            # Procesamos la lista
+            cve_list = []
+            for item in data.get('vulnerabilities', []):
+                cve = item['cve']
+                cve_id = cve['id']
+                # Buscamos descripción en inglés
+                desc = "Sin descripción"
+                for d in cve.get('descriptions', []):
+                    if d['lang'] == 'en':
+                        desc = d['value']
+                        break
+                
+                cve_list.append(f"- **{cve_id}**: {desc[:150]}...")
+            
+            return "\n".join(cve_list)
+
+        return None
+    
+    except Exception as e:
+        print(f"⚠️ Error al consultar NVD: {str(e)}")
+        return None
+
