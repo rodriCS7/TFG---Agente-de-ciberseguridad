@@ -19,8 +19,8 @@ from langgraph.checkpoint.memory import MemorySaver # Para añadir memoria al gr
 
 # --- MÓDULOS PROPIOS ---
 # Separación de responsabilidades: Prompts en un lado, Herramientas en otro
-from prompts import ORCHESTRATOR_SYSTEM_PROMPT, ANALYST_SYSTEM_PROMPT, CONSULTANT_RAG_PROMPT
-from tools import check_hash_vt, check_url_virustotal, extract_hash_from_text, extract_url_from_text
+from prompts import ORCHESTRATOR_SYSTEM_PROMPT, ANALYST_SYSTEM_PROMPT, CONSULTANT_RAG_PROMPT, REPORTER_SYSTEM_PROMPT
+from tools import check_hash_vt, check_url_virustotal, extract_hash_from_text, extract_url_from_text, generate_pdf_report
 
 # --- IMPORTS PARA RAG ---
 from langchain_chroma import Chroma
@@ -39,12 +39,12 @@ if not google_key:
     exit()
 
 # Configuración del Cliente LangChain (Principal)
-# Usamos 'gemini-2.5-flash' por ser el modelo más eficiente y capaz actualmente.
+# Usamos 'gemini-3-flash-preview' por ser el modelo más eficiente y capaz actualmente.
 # Temperature 0.3 reduce alucinaciones.
 # BLOCK_NONE en seguridad es vital para permitir analizar malware sin bloqueos.
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
+    model="gemini-3-flash-preview",
     google_api_key=google_key,
     temperature=0.3, 
     safety_settings={
@@ -239,7 +239,7 @@ def analyst_node(state: State):
         client = genai.Client(api_key=google_key)
         
         native_response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-3-flash-preview",
                 contents=full_analysis_prompt,
                 config=types.GenerateContentConfig(
                     safety_settings=[
@@ -372,7 +372,7 @@ def consultant_node(state: State):
         client = genai.Client(api_key=google_key)
         
         native_response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="ggemini-3-flash-preview",
             contents=rag_prompt,
             config=types.GenerateContentConfig(
                 safety_settings=[
@@ -400,8 +400,71 @@ def consultant_node(state: State):
     except Exception as e:
         print(f"❌ Error RAG: {e}")
         return {"messages": [SystemMessage(content="Lo siento, hubo un error al consultar los apuntes.")]}
+
+
+def reporter_node(state: State):
+    """
+    NODO REPORTERO (Versión Nativa):
+    Usa el SDK de Google directamente para forzar salida JSON y evitar errores de LangChain.
+    """
+    print("--- 📝 EJECUTANDO NODO REPORTERO ---")
     
+    active_threat = state.get("active_threat", "Amenaza General")
     
+    # 1. Recuperamos historial (limpiando llaves para que no rompan el .format)
+    recent_messages = state['messages'][-6:]
+    history_summary = "\n".join([f"{m.type}: {m.content}" for m in recent_messages])
+    history_summary = history_summary.replace("{", "(").replace("}", ")") # Sanitización clave
+    
+    # 2. Rellenamos el prompt
+    formatted_prompt = REPORTER_SYSTEM_PROMPT.format(
+        active_threat=active_threat,
+        history_summary=history_summary
+    )
+    
+    try:
+        # 3. Invocamos a Gemini (CLIENTE NATIVO)
+        # Esto es mucho más estable que llm.invoke para generar JSONs
+        client = genai.Client(api_key=google_key)
+        
+        response = client.models.generate_content(
+            model="gemini-3-flash-preview",
+            contents=formatted_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json" # Fuerza respuesta JSON válida
+            )
+        )
+        
+        # Como hemos forzado JSON, la respuesta viene limpia
+        if not response.text:
+            raise ValueError("Gemini devolvió una respuesta vacía.")
+
+        print("   🤖 JSON generado por IA...")
+        report_data = json.loads(response.text)
+        
+        # 4. Generamos el PDF físico
+        # Limpiamos el nombre del archivo para que no tenga caracteres raros
+        safe_threat_name = "".join([c if c.isalnum() else "_" for c in active_threat])
+        filename = f"Reporte_{safe_threat_name}.pdf"
+        
+        pdf_path = generate_pdf_report(report_data, filename)
+        
+        print(f"   ✅ PDF generado exitosamente: {pdf_path}")
+        
+        # 5. Retornamos señal especial para Telegram
+        return {
+            "messages": [AIMessage(content=f"FILE_GENERATED::{pdf_path}")]
+        }
+
+    except Exception as e:
+        print(f"❌ Error generando reporte: {e}")
+        # Imprimir el prompt para debug si vuelve a fallar
+        # print(f"DEBUG PROMPT: {formatted_prompt}") 
+        return {
+            "messages": [AIMessage(content="Lo siento, hubo un error técnico al generar el archivo PDF.")]
+        }
+    
+
 # ==========================================
 # 4. CONSTRUCCIÓN DEL GRAFO (Workflow)
 # ==========================================
@@ -417,6 +480,8 @@ def router(state: State):
         return "analyst"
     elif decision == "TO_CONSULTANT":
         return "consultant"
+    elif decision == "TO_REPORT":
+        return "reporter"
     elif decision == "TO_CHAT":
         return END
     else:
@@ -430,6 +495,7 @@ graph_builder = StateGraph(State)
 graph_builder.add_node("orchestrator", orchestrator_node)
 graph_builder.add_node("analyst", analyst_node)
 graph_builder.add_node("consultant", consultant_node)
+graph_builder.add_node("reporter", reporter_node)
 
 # B. Definir Flujo (Aristas)
 graph_builder.add_edge(START, "orchestrator") # Punto de entrada
@@ -438,12 +504,16 @@ graph_builder.add_edge(START, "orchestrator") # Punto de entrada
 graph_builder.add_conditional_edges(
     "orchestrator",
     router,
-    {"analyst": "analyst", "consultant": "consultant", END: END}
+    {"analyst": "analyst",
+     "consultant": "consultant",
+     "reporter": "reporter",
+     END: END}
 )
 
 # D. Cierre del flujo (Los workers vuelven al usuario)
 graph_builder.add_edge("analyst", END)
 graph_builder.add_edge("consultant", END)
+graph_builder.add_edge("reporter", END)
 
 # Inicializamos la memoria volátil (se borra al reiniciar el bot)
 memory = MemorySaver()

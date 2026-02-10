@@ -5,6 +5,7 @@ import requests
 import base64
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
+from fpdf import FPDF
 
 load_dotenv('.env')
 VT_KEY = os.getenv('VT_API_KEY')
@@ -87,8 +88,8 @@ def check_url_virustotal(url_to_scan):
         }
 
         # 2. Consultar el reporte (Endpoint: /urls/{id})
-        enpoint = f"https://www.virustotal.com/api/v3/urls/{url_id}"
-        response = requests.get(enpoint, headers=headers)
+        endpoint = f"https://www.virustotal.com/api/v3/urls/{url_id}"
+        response = requests.get(endpoint, headers=headers)
 
         if response.status_code == 200:
             data = response.json()
@@ -141,7 +142,7 @@ def extract_url_from_text(text):
         # FILTRO ANTI-FALSOS POSITIVOS
         # Evita que detecte nombres de archivos comunes como URLs (ej: reporte.pdf)
         # Si termina en una extensión de archivo típica y no tiene http/www, lo ignoramos.
-        excluded_extensions = ('.pdf', '.jpg', '.png', '.exe', '.docx', '.txt', '.py')
+        excluded_extensions = ('.pdf', '.jpg', '.png', '.exe', '.docx', '.txt')
         if url.lower().endswith(excluded_extensions) and not url.startswith(('http', 'www')):
             return None
 
@@ -203,3 +204,93 @@ def get_new_critical_cves():
         print(f"⚠️ Error al consultar NVD: {str(e)}")
         return None
 
+
+
+def sanitize_text_for_pdf(text):
+    """
+    Limpia el texto de emojis y caracteres no soportados por FPDF.
+    """
+
+    # Mapeo básico de caracteres problemáticos
+    replacements = {
+        "“": '"', "”": '"', "‘": "'", "’": "'", "–": "-", "—": "-",
+        "⚠️": "[ALERTA]", "⛔": "[PELIGRO]", "✅": "[OK]", "ℹ️": "[INFO]", 
+        "🛡️": "[SEGURIDAD]", "🔍": "[ANALISIS]", "🎓": "[DOC]"
+    }
+    for char, replacement in replacements.items():
+        text = text.replace(char, replacement)
+
+    # Intentamos codificar a latin-1, reemplazando lo que no quepa por '?'
+    return text.encode('latin-1', 'replace').decode('latin-1')
+
+class PDFReport(FPDF):
+    def header(self):
+        self.set_font('Arial', 'B', 15)
+        self.cell(0, 10, 'Informe de Seguridad - SecMate', 0, 1, 'C')
+        self.ln(5)
+
+    def footer(self):
+        self.set_y(-15)
+        self.set_font('Arial', 'I', 8)
+        self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
+
+
+def generate_pdf_report(content_dict, filename="reporte_seguridad.pdf"):
+    """
+    Genera un PDF profesional con los datos del análisis.
+    Args:
+        content_dict: Diccionario con {título, amenaza, detalles, recomendaciones}
+    """
+
+    pdf = PDFReport()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    # 1. Título del Reporte
+    pdf.set_font("Arial", "B", 16)
+    pdf.set_text_color(200, 0, 0) # Rojo oscuro para el título
+    title = sanitize_text_for_pdf(f"REPORTE: {content_dict.get('amenaza', 'Amenaza Desconocida')}")
+    pdf.multi_cell(0, 10, title, align='L')
+    pdf.ln(5)
+
+    # 2. Fecha y Hora
+    pdf.set_font("Arial", "I", 10)
+    pdf.set_text_color(0, 0, 0)
+    timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    pdf.cell(0, 10, f"Fecha de generacion: {timestamp}", 0, 1)
+    pdf.ln(5)
+
+    # 3. Cuerpo del Informe (Detalles Técnicos)
+    pdf.set_font("Arial", "B", 12)
+    pdf.set_fill_color(230, 230, 230) # Gris claro
+    pdf.cell(0, 10, "1. ANALISIS TECNICO", 0, 1, 'L', fill=True)
+    pdf.ln(2)
+    
+    pdf.set_font("Arial", "", 11)
+    detalles = sanitize_text_for_pdf(content_dict.get('detalles', 'Sin detalles.'))
+    pdf.multi_cell(0, 8, detalles)
+    pdf.ln(5)
+
+    # 4. Recomendaciones
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(0, 10, "2. CONCLUSIONES Y RECOMENDACIONES", 0, 1, 'L', fill=True)
+    pdf.ln(2)
+    
+    pdf.set_font("Arial", "", 11)
+    raw_recos = content_dict.get('recomendaciones', 'Sin recomendaciones.')
+    
+    # TRUCO VISUAL: Forzamos salto de línea antes de cada guion
+    # Reemplazamos "- " por "\n- " (Salto + Guion)
+    formatted_recos = raw_recos.replace("- ", "\n- ").strip()
+    
+    # Si al principio nos ha quedado un salto extra, lo quitamos
+    if formatted_recos.startswith("\n"):
+        formatted_recos = formatted_recos[1:]
+
+    recos = sanitize_text_for_pdf(formatted_recos)
+    pdf.multi_cell(0, 8, recos)
+    
+    # Guardar
+    output_path = f"temp_{filename}"
+    pdf.output(output_path)
+    return output_path

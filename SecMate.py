@@ -1,4 +1,3 @@
-import datetime
 import os
 from dotenv import load_dotenv
 from datetime import datetime
@@ -18,6 +17,7 @@ from langchain_core.messages import HumanMessage
 # --- IMPORTACIONES PROPIAS (Módulos del TFG) ---
 from agent_graph import graph      # El cerebro (Grafo de LangGraph)
 from tools import get_file_hash, get_new_critical_cves    # Herramienta para cálculo SHA-256 y consulta de CVEs recientes
+from prompts import BOLETIN_DE_SEGURIDAD_PROMPT
 
 # ==========================================
 # 1. CONFIGURACIÓN E INICIALIZACIÓN
@@ -36,6 +36,8 @@ if not telegram_token:
 if not google_api_key:
     print("❌ Error crítico: Falta la variable GOOGLE_API_KEY en .env")
     exit()
+
+client = genai.Client(api_key=google_api_key)
 
 # ==========================================
 # 2. LÓGICA DE CONEXIÓN CON LA IA (PUENTE)
@@ -73,6 +75,24 @@ async def process_with_graph(update: Update, text_input: str):
         
         # 5. Extraemos la última respuesta generada por la IA
         raw_response = final_state['messages'][-1].content
+
+        # --- GESTIÓN DE ARCHIVOS (REPORTER) ---
+        if "FILE_GENERATED::" in raw_response:
+            # Es una ruta de archivo
+            file_path = raw_response.split("FILE_GENERATED::")[1].strip()
+
+            if os.path.exists(file_path):
+                print(f"📤 Enviando documento: {file_path}")
+                await update.message.reply_document(
+                    document=open(file_path, 'rb'),
+                    caption="📄 Aquí tienes el informe técnico solicitado."
+                )
+                # Borramos el temporal
+                os.remove(file_path)
+            else:
+                await update.message.reply_text("⚠️ Error: El archivo de reporte no se pudo encontrar.")
+            return # Salimos de la función porque ya respondimos al usuario con el archivo
+        
 
         # --- Limpiamos la respuesta ---
         # Si el bot responde con formato "ACCIÓN :: RAZÓN :: MENSAJE", nos quedamos solo con el MENSAJE.
@@ -241,39 +261,19 @@ async def check_new_cves (context: ContextTypes.DEFAULT_TYPE):
     if new_cves_text:
         print(f"   🆕 Nuevas vulnerabilidades críticas encontradas.")
         
-        # 2. Definimos el Prompt Específico
-        prompt_boletin_seguridad = (
-            f"Actúa como un Analista de Ciberinteligencia. Tu tarea es resumir los CVEs críticos del NIST para un canal de Telegram.\n"
-            f"Tus lectores son técnicos, pero necesitan lectura rápida.\n\n"
-
-            f"DATOS DEL NIST (INPUT):\n"
-            f"{new_cves_text}\n\n"
-
-            f"REGLAS DE FORMATO CRÍTICAS (PARA EVITAR ERRORES DE PARSEO):\n"
-            f"1. Título: Usa '🛡️ **Boletín de Seguridad - {fecha_actual}**' al inicio.\n"
-            f"2. Estructura por CVE: Usa un formato de lista limpia.\n"
-            f"3. EL ID del CVE debe ir SIEMPRE en bloque de código monoespaciado (con acento grave `). Ejemplo: `CVE-2024-0001`.\n"
-            f"4. NO uses caracteres especiales de Markdown (como corchetes [], paréntesis () o guiones bajos _) fuera de los bloques de código.\n"
-            f"5. NO pongas enlaces con formato markdown [texto](url). Pon la URL tal cual si es necesaria.\n\n"
-
-            f"PLANTILLA DE RESPUESTA A SEGUIR:\n"
-            f"🔸 `CVE-XXXX-XXXX` | **Nombre del Software/Producto**\n"
-            f"Impacto: Breve resumen del daño (RCE, DoS, Escalada).\n"
-            f"CVSS: `9.8` (si está disponible)\n\n"
-            f"(Repetir para cada CVE...)\n\n"
-            f"⚠️ _Parchear inmediatamente._"
+        # 2. Formateamos el prompt 
+        formatted_prompt = BOLETIN_DE_SEGURIDAD_PROMPT.format(
+            cves_text=new_cves_text,
+            date=fecha_actual
         )
         
         try:
             # 3. LLAMADA DIRECTA CON NUEVO SDK + BYPASS SEGURIDAD
             # Usamos .aio para llamadas asíncronas
 
-            client = genai.Client(api_key=google_api_key)
-
-
             response = await client.aio.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt_boletin_seguridad,
+                model='gemini-3-flash-preview',
+                contents=formatted_prompt,
                 config=types.GenerateContentConfig(
                     safety_settings=[
                         types.SafetySetting(
