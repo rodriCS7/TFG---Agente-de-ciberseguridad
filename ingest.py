@@ -69,7 +69,7 @@ def main():
     # Generamos los vectores y los persistimos en disco usando ChromaDB.
     print("🚀 Generando índices vectoriales y guardando en disco...")
     
-    vector_store = Chroma.from_documents(
+    Chroma.from_documents(
         documents=chunks,
         embedding=embeddings,
         persist_directory=DB_PATH
