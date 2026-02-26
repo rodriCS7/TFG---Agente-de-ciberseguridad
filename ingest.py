@@ -2,7 +2,6 @@
 # INGESTA DE DOCUMENTOS (RAG OFFLINE)
 # ================================================
 # Script de ETL (Extract, Transform, Load) para la base de conocimiento.
-#
 # ARQUITECTURA:
 # Utiliza un modelo de Embeddings Local (HuggingFace) para convertir
 # los documentos PDF en vectores almacenados en ChromaDB.
@@ -41,7 +40,7 @@ def main():
 
     # 2. TRANSFORMACIÓN (SPLIT)
     # Dividimos el texto en fragmentos (chunks) para optimizar la búsqueda semántica.
-    # El solapamiento (overlap) preserva el contexto entre cortes de párrafo.
+    # El solapamiento (overlap) preserva el contexto entre cortes de chunk.
     print("✂️  Procesando y segmentando texto...")
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,      # Caracteres por fragmento
@@ -60,8 +59,9 @@ def main():
 
     # 4. MODELADO (EMBEDDINGS)
     # Inicializamos el modelo de lenguaje local.
-    # 'all-MiniLM-L6-v2' es un modelo SOTA (State Of The Art) para tareas de 
-    # similitud semántica, optimizado para ejecutarse en CPU.
+    # Es un modelo de embeddings de propósito general optimizado para similitud semántica, con buen rendimiento en CPU (no requiere GPU)
+    # Compromiso entre calidad de representación y velocidad de búsqueda.
+    # La alternativa con Google Embeddings tiene límite de cuota en la capa gratuita que haría el RAG poco fiable en producción.
     print("💾 Cargando modelo de embeddings (HuggingFace Local)...")
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 

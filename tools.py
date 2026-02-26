@@ -13,28 +13,39 @@ VT_KEY = os.getenv('VT_API_KEY')
 if not VT_KEY:
     print("⚠️ Error: Falta la API Key de VirusTotal.")
 
+# =============================
 # Para el módulo de VirusTotal
+# =============================
+
 def get_file_hash(file_path):
-    """Calcula el hash SHA-256 de un archivo local."""
+
+    # Calcula el hash SHA-256 de un archivo local
+
     sha256_hash = hashlib.sha256()
     try:
         with open(file_path, "rb") as f:
-            for byte_block in iter(lambda: f.read(4096), b""):
+            for byte_block in iter(lambda: f.read(4096), b""): # Lectura incremental para no cargar archivos grandes enteros en memoria
                 sha256_hash.update(byte_block)
         return sha256_hash.hexdigest()
     except FileNotFoundError:
         return None
     
+
 def extract_hash_from_text(text):
-    """Busca cadenas de caracteres que parezcan un hash (MD5, SHA1, SHA256) en un texto."""
+
+    # Busca cadenas de caracteres que parezcan un hash (MD5, SHA1, SHA256) en un texto.
     # Buscamos cadenas de 32, 40 o 64 caracteres hexadecimales
+
     match = re.search(r'\b[a-fA-F0-9]{32}\b|\b[a-fA-F0-9]{40}\b|\b[a-fA-F0-9]{64}\b', text)
     if match:
         return match.group(0)
     return None
 
+
 def check_hash_vt(file_hash):
-    """Consulta a VirusTotal y devuelve un diccionario con los datos crudos."""
+
+    # Consulta a VirusTotal y devuelve un diccionario con los datos crudos.
+
     if not VT_KEY:
         return {"error": "Falta la clave de API de VirusTotal."}
     
@@ -70,7 +81,46 @@ def check_hash_vt(file_hash):
     except Exception as e:
         return {"error": f"Error al conectar con VirusTotal: {str(e)}"}
 
+
+# ==========================
 # Para el módulo de Phising
+# ==========================
+
+def extract_url_from_text(text):
+
+    """
+    Extrae la primera URL encontrada en un texto.
+    Soporta:
+    - Protocolos: http://, https://
+    - Subdominios comunes: www.
+    - Dominios: ejemplo.com, sitio.org
+    """
+
+    url_pattern = r"\b((?:https?://|www\.|[a-zA-Z0-9-]+\.[a-z]{2,})\S+)\b"
+    
+    match = re.search(url_pattern, text, re.IGNORECASE)
+    
+    if match:
+        url = match.group(0)
+        
+        # FILTRO ANTI-FALSOS POSITIVOS
+        # Evita que detecte nombres de archivos comunes como URLs (ej: reporte.pdf)
+        # Si termina en una extensión de archivo típica y no tiene http/www, lo ignoramos.
+        excluded_extensions = ('.pdf', '.jpg', '.png', '.exe', '.docx', '.txt')
+        if url.lower().endswith(excluded_extensions) and not url.startswith(('http', 'www')):
+            return None
+
+        # NORMALIZACIÓN
+        # Si detectamos "google.com" o "www.google.com", le añadimos "http://"
+        # VirusTotal necesita el protocolo para procesarlo correctamente.
+        if not url.startswith(('http://', 'https://')):
+            url = 'http://' + url
+            
+        return url.strip()
+        
+    return None
+
+
 def check_url_virustotal(url_to_scan):
     """
     Consulta la reputación de una URL en VirusTotal.
@@ -117,44 +167,14 @@ def check_url_virustotal(url_to_scan):
         return {"error": f"Error interno analizando URL: {str(e)}"}
     
 
-def extract_url_from_text(text):
-    """
-    Extrae la primera URL encontrada en un texto.
-    Soporta:
-    - Protocolos: http://, https://
-    - Subdominios comunes: www.
-    - Dominios: ejemplo.com, sitio.org
-    """
-
-    url_pattern = r"\b((?:https?://|www\.|[a-zA-Z0-9-]+\.[a-z]{2,})\S+)\b"
-    
-    match = re.search(url_pattern, text, re.IGNORECASE)
-    
-    if match:
-        url = match.group(0)
-        
-        # FILTRO ANTI-FALSOS POSITIVOS
-        # Evita que detecte nombres de archivos comunes como URLs (ej: reporte.pdf)
-        # Si termina en una extensión de archivo típica y no tiene http/www, lo ignoramos.
-        excluded_extensions = ('.pdf', '.jpg', '.png', '.exe', '.docx', '.txt')
-        if url.lower().endswith(excluded_extensions) and not url.startswith(('http', 'www')):
-            return None
-
-        # NORMALIZACIÓN
-        # Si detectamos "google.com" o "www.google.com", le añadimos "http://"
-        # VirusTotal necesita el protocolo para procesarlo correctamente.
-        if not url.startswith(('http://', 'https://')):
-            url = 'http://' + url
-            
-        return url.strip()
-        
-    return None
-
+# =============================
+# Para el boletín de seguridad
+# =============================
 
 def get_new_critical_cves():
-    """
-    Consulta la API de NVD para obtener las vulnerabilidades críticas (CVSS >= 9.0) publicadas en las últimas 24 horas.
-    """
+    
+    #Consulta la API de NVD para obtener las vulnerabilidades críticas (CVSS >= 9.0) publicadas en las últimas 24 horas.
+    
     try:
         # 1. Calcular rango de fechas (últimas 24 horas)
         now = datetime.now(timezone.utc)
@@ -198,24 +218,26 @@ def get_new_critical_cves():
         print(f"⚠️ Error al consultar NVD: {str(e)}")
         return None
 
-
+# ==============================
+# Para el módulo de reportes PDF
+# ==============================
 
 def sanitize_text_for_pdf(text):
-    """
-    Limpia el texto de emojis y caracteres no soportados por FPDF.
-    """
+    
+    # Limpia el texto de emojis y caracteres no soportados por FPDF.
 
     # Mapeo básico de caracteres problemáticos
     replacements = {
         "“": '"', "”": '"', "‘": "'", "’": "'", "–": "-", "—": "-",
         "⚠️": "[ALERTA]", "⛔": "[PELIGRO]", "✅": "[OK]", "ℹ️": "[INFO]", 
-        "🛡️": "[SEGURIDAD]", "🔍": "[ANALISIS]", "🎓": "[DOC]"
+        "🛡️": "[SEGURIDAD]", "🔍": "[ANALISIS]"
     }
     for char, replacement in replacements.items():
         text = text.replace(char, replacement)
 
-    # Intentamos codificar a latin-1, reemplazando lo que no quepa por '?'
+    # Intentamos codificar a latin-1, reemplazando los caracteres unicode residuales por '?'
     return text.encode('latin-1', 'replace').decode('latin-1')
+
 
 class PDFReport(FPDF):
     def header(self):
@@ -230,12 +252,9 @@ class PDFReport(FPDF):
 
 
 def generate_pdf_report(content_dict, filename="reporte_seguridad.pdf"):
-    """
-    Genera un PDF profesional con los datos del análisis.
-    Args:
-        content_dict: Diccionario con {título, amenaza, detalles, recomendaciones}
-    """
-
+    
+    # Genera un PDF profesional con los datos del análisis.
+    
     pdf = PDFReport()
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)

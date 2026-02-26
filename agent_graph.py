@@ -11,7 +11,7 @@ from google.genai import types # Para tipos de configuración
 
 # --- LIBRERÍAS DE LANGCHAIN ---
 # Framework principal para orquestar el flujo y manejar el historial
-from langchain_google_genai import ChatGoogleGenerativeAI, HarmBlockThreshold, HarmCategory
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, AIMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
@@ -25,6 +25,7 @@ from tools import check_hash_vt, check_url_virustotal, extract_hash_from_text, e
 # --- IMPORTS PARA RAG ---
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
+
 
 # ==========================================
 # 1. CONFIGURACIÓN E INICIALIZACIÓN
@@ -44,7 +45,8 @@ MODEL_NAME = "gemini-3-flash-preview"
 # Configuración del Cliente LangChain (Principal) / Wrapper de LangChain para el modelo de Google. 
 # Usamos 'gemini-3-flash-preview' por ser el modelo más eficiente y capaz actualmente.
 # Temperature 0.3 reduce alucinaciones.
-# Lo usaremos principalmente para el Orquestador, que maneja texto puro y no datos técnicos sensibles. Además Langchain maneja automáticamente el historial de meoria y el ruteo del Grafo.
+# Lo usaremos principalmente para el Orquestador, que maneja texto puro y no datos técnicos sensibles. 
+# Además Langchain maneja automáticamente el historial de meoria y el ruteo del Grafo.
 # Para análisis técnicos y generación de reportes, usaremos el cliente nativo para evitar problemas de parseo y filtros de seguridad.
 
 llm = ChatGoogleGenerativeAI(
@@ -61,30 +63,36 @@ embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-
 
 # Definición del Estado del Grafo (La "Memoria" del Bot)
 class State(TypedDict):
-    # 1. Historial de chat (Append-only: Los mensajes nuevos se añaden al final)
+    # 1. Historial de chat --> Lista de mensajes con add_messages. Acumula los mensajes nuevos al final de la lista.
     messages: Annotated[list, add_messages] 
     
-    # 2. Contexto de Amenaza (Overwrite: Se sobrescribe con cada análisis nuevo)
+    # 2. Contexto de Amenaza --> String opcional que almacena el tipo del amenazas detectada en el último análisis
     # Aquí guardaremos "Phishing", "Ransomware", etc.
+    # Empleado en el flujo dinámico para que el orquestador pueda dirigir al consultor con contexto específico sin que el usuario tenga que repetirlo.
     active_threat: Optional[str]
     
-    # 3. Pregunta Refinada (Overwrite: Pasa del Orquestador al Consultor)
-    # Si el usuario dice "Sí", aquí guardaremos "¿Qué es un Ransomware?"
+    # 3. Pregunta Refinada --> string opcional que el orquestador escribe cuando decide derivar al consultor
+    # Contiene la pregunta reescrita y enriquecida con contexto (ej: "Explícame en detalle qué es el Phishing y cómo protegerme")
     refined_query: Optional[str]
 
-    next_step: Optional[str] # Variable temporal para el router condicional (no se guarda en memoria, solo para lógica de flujo)
+    # 4. String opcional que actúa como variable temporal de señalización para el router.
+    # El Orquestador escribe aquí la decisión de a qué nodo dirigir el flujo (ej: "TO_ANALYST", "TO_CONSULTANT", etc.) y el router la lee para tomar la decisión.
+    next_step: Optional[str]
+
 
 # ==========================================
 # 2. FUNCIONES AUXILIARES (UTILITIES)
 # ==========================================
 
 def clean_response_text(ai_message):
+
     """
     SANITIZADOR DE RESPUESTAS:
-    Corrige un bug conocido de compatibilidad entre Gemini y LangChain donde
-    la IA devuelve una lista de objetos JSON en lugar de texto plano.
-    Esta función extrae y concatena el texto para evitar que el Router falle.
+    Corrige un bug conocido de compatibilidad entre el SDK de Gemini y el wrapper de LangChain.
+    En ciertas versiones, cuando Gemini devuelve una respuesta multimodal o con bloques de pensamiento, LangChain la deserializa como una lista de objetos en lugar de un string.
+    La función detecta si content es una lista, extrae solo los bloques de tipo texto y los concatena, garantizando que el parsing posterior del formato DESTINO :: CONTENIDO funcione correctamente.
     """
+
     content = ai_message.content
     if isinstance(content, list):
         # Filtramos solo los bloques que contienen texto
@@ -116,7 +124,7 @@ def orchestrator_node(state: State):
     filled_prompt = ORCHESTRATOR_SYSTEM_PROMPT.format(active_threat=active_threat)
     
     # Construimos la lista de mensajes para el LLM
-    # Mantenemos el historial para que entienda "Explícame ESO"
+    # Mantenemos el historial para que entienda referencias como "Explícame ESO"
     messages = [SystemMessage(content=filled_prompt)] + state['messages']
     
     # 3. Invocamos a la IA
@@ -142,21 +150,23 @@ def orchestrator_node(state: State):
     # para que el Consultor sepa qué buscar
     
     return {
-        "messages": [AIMessage(content=refined_content)], # Guardamos lo que pensó el orquestador (opcional, para debug)
-        "next_step": decision, # Variable temporal para el router condicional
+        "messages": [AIMessage(content=refined_content)], 
+        "next_step": decision,
         "refined_query": refined_content if decision == "TO_CONSULTANT" else None
     }
 
 
 def analyst_node(state: State):
+
     """
     NODO ANALISTA (El Especialista Técnico):
     - Combina Inteligencia Técnica (VirusTotal) + Inteligencia Semántica (Análisis de Texto).
     - Objetivo: Detectar ataques complejos donde la URL puede parecer limpia pero el contexto es malicioso.
     - Implementa lógica HÍBRIDA (IA + Determinista).
-    - Usa el SDK Nativo de Google para saltar limitaciones de LangChain con datos de virus.
+    - Usa el SDK Nativo de Google para saltar limitaciones de LangChain.
     - Incluye mecanismo de 'Graceful Degradation' (Reporte Manual) si falla la IA.
     """
+
     print("--- 🕵️‍♂️ EJECUTANDO NODO ANALISTA ---")
 
     # 1. Búsqueda del último mensaje real del usuario (ignorando mensajes de sistema)
@@ -239,8 +249,9 @@ def analyst_node(state: State):
 
     # Aparece al final del mensaje para guiar al usuario
     call_to_action = (
-        f"\n\n🎓 *¿Quieres aprender más?*\n"
-        f"Simplemente dime *'Explícame qué es esto'* o *'¿Cómo funciona?'* y te daré más información sobre {detected_topic}."
+        f"\n\n🎓 ¿Quieres aprender más sobre {detected_topic}?\n"
+        f"Simplemente dime 'Explícame qué es esto' o '¿Cómo funciona?' y te daré más información.\n"
+        f"También puedes pedir un informe detallado diciendo 'Genera un informe de esto'."
     )
 
     # 4. Generaración de Respuesta con Cliente Nativo (Bypass de Seguridad)
@@ -305,18 +316,20 @@ def analyst_node(state: State):
         )
         return {"messages": [SystemMessage(content=manual_report + call_to_action)], "active_threat": detected_topic}
 
+
 def consultant_node(state: State):
+
     """
     NODO CONSULTOR (RAG):
     Usa el cliente nativo y desactiva filtros para poder explicar
     conceptos de ciberseguridad sin censura.
     """
+
     print("--- 📚 EJECUTANDO NODO CONSULTOR (RAG) ---")
     
     # 1. Recuperar pregunta
-    # El grafo de LangGraph pasa un objeto state que contiene todo el historial del chat. 
-    # El código recorre los mensajes de atrás hacia adelante (reversed) para encontrar 
-    # la última pregunta que hizo el usuario.
+    # Si refined_query tiene contenido, se usa directamente. Esta pregunta fue reescrita por el orquestador para incluir el contexto de la amenaza activa.
+    # Si no hay refined_query, se busca el último mensaje humano en el historial iterando en reversa.
     
     if state.get("refined_query"):
         user_question = state["refined_query"]
@@ -340,13 +353,13 @@ def consultant_node(state: State):
     # Embeddings HuggingFaceEmbeddings inicializados globalmente
     
     try:
-        # Conexión a la BBDD vectorial
+        # Conexión a la BBDD vectorial. Carga el índice vectorial desde disco en memoria, construido por ingest.py
         vector_store = Chroma(persist_directory=DB_PATH, embedding_function=embeddings)
         
         # 3. Retrieval
         # Convierte la pregunta en un vector y busca los K fragmentos más cerca matemáticamente (más relevantes).
         results = vector_store.similarity_search(user_question, k=15)
-        # A. Extraemos el contexto para la IA
+        # A. Extraemos el contexto para la IA (concatenamos los fragmentos recuperados en un solo string, separados por saltos de línea)
         context_text = "\n\n".join([doc.page_content for doc in results])
         # B. Extraemos las fuentes (metadatos) para el debugging
         # Usamos un set() para evitar duplicados si varios trozos vienen del mismo documento
@@ -370,10 +383,11 @@ def consultant_node(state: State):
         print("   📖 Contexto recuperado.")
 
         # 4. Prompt 
-        # Context Injection: Inyectamos contexto y pregunta en el prompt RAG
+        # Context Injection: Inyectamos contexto y pregunta en el prompt del consultor
+        # RAG Prompt Stuffing. Toda la "memoria" del consultor está en el contexto de esa llamada.
         rag_prompt = CONSULTANT_RAG_PROMPT.format(
-            context_text=context_text,
-            user_question=user_question
+            context_text=context_text, # Fragmentos recuperados
+            user_question=user_question # Pregunta del usuario (o pregunta refinada por el orquestador)
         )
 
         # 5. GENERACIÓN CON CLIENTE NATIVO (BYPASS DE SEGURIDAD)
@@ -406,10 +420,12 @@ def consultant_node(state: State):
 
 
 def reporter_node(state: State):
+
     """
-    NODO REPORTERO (Versión Nativa):
+    NODO REPORTERO:
     Usa el SDK de Google directamente para forzar salida JSON y evitar errores de LangChain.
     """
+
     print("--- 📝 EJECUTANDO NODO REPORTERO ---")
     
     active_threat = state.get("active_threat", "Amenaza General")
@@ -417,7 +433,7 @@ def reporter_node(state: State):
     # 1. Recuperamos historial (limpiando llaves para que no rompan el .format)
     recent_messages = state['messages'][-6:]
     history_summary = "\n".join([f"{m.type}: {m.content}" for m in recent_messages])
-    history_summary = history_summary.replace("{", "(").replace("}", ")") # Sanitización clave
+    history_summary = history_summary.replace("{", "(").replace("}", ")") # Sanitización para el .format
     
     # 2. Rellenamos el prompt
     formatted_prompt = REPORTER_SYSTEM_PROMPT.format(
@@ -455,14 +471,13 @@ def reporter_node(state: State):
         print(f"   ✅ PDF generado exitosamente: {pdf_path}")
         
         # 5. Retornamos señal especial para Telegram
+        # Esta cadena es detectada por process_with_graph en SecMate.py, que la intercepta antes de intentar enviarla como texto y la procesa como un envío de documento
         return {
             "messages": [AIMessage(content=f"FILE_GENERATED::{pdf_path}")]
         }
 
     except Exception as e:
         print(f"❌ Error generando reporte: {e}")
-        # Imprimir el prompt para debug si vuelve a fallar
-        # print(f"DEBUG PROMPT: {formatted_prompt}") 
         return {
             "messages": [AIMessage(content="Lo siento, hubo un error técnico al generar el archivo PDF.")]
         }
@@ -473,10 +488,12 @@ def reporter_node(state: State):
 # ==========================================
 
 def router(state: State):
+
     """
     ROUTER (Semáforo):
     Lee la decisión del Orquestador y dirige el flujo al nodo correspondiente.
     """
+
     decision = state.get("next_step")
 
     if decision == "TO_ANALYST":
@@ -494,16 +511,16 @@ def router(state: State):
 # Definición de la estructura del grafo
 graph_builder = StateGraph(State)
 
-# A. Añadir Nodos
+# Paso 1: Añadir Nodos
 graph_builder.add_node("orchestrator", orchestrator_node)
 graph_builder.add_node("analyst", analyst_node)
 graph_builder.add_node("consultant", consultant_node)
 graph_builder.add_node("reporter", reporter_node)
 
-# B. Definir Flujo (Aristas)
-graph_builder.add_edge(START, "orchestrator") # Punto de entrada
+# Paso 2: Definir el punto de entrada
+graph_builder.add_edge(START, "orchestrator")
 
-# C. Lógica Condicional (Decision Making)
+# Paso 3: Añadir aristas condicionales desde el orquestador (su funcion de condicion es router)
 graph_builder.add_conditional_edges(
     "orchestrator",
     router,
@@ -513,12 +530,14 @@ graph_builder.add_conditional_edges(
      END: END}
 )
 
-# D. Cierre del flujo (Los workers vuelven al usuario)
+# Paso 4: Cierre del flujo (Los workers vuelven al usuario)
 graph_builder.add_edge("analyst", END)
 graph_builder.add_edge("consultant", END)
 graph_builder.add_edge("reporter", END)
 
-# Inicializamos la memoria volátil (se borra al reiniciar el bot)
+# Inicializamos la memoria volátil (persiste el estado del grafo en RAM) particionado por thread_id.
+# Cuando se llama a graph.ainvoke con un thread_id existente, LangGraph carga el estado anterior, añade el nuevo mensaje y ejecuta el grafo desde el inicio. 
+# Esto implementa la memoria conversacional sin base de datos externa.
 memory = MemorySaver()
 
 # Compilación final

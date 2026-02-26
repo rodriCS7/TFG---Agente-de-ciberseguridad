@@ -2,9 +2,10 @@
 # PROMPT ENGINEERING (INGENIERÍA DE PROMPTS)
 # ==========================================
 
-
-# Definimos la "personalidad" y lógica de decisión del Orquestador.
-# No responde técnicamente, solo clasifica la intención del usuario.
+# Define el comportamiento del orquestador mediante cinco escenarios con ejemplos de entrada/salida.
+# El campo {active_threat} se rellena en tiempo de ejecución. 
+# El formato de respuesta obligatorio [DESTINO] :: [CONTENIDO] es un contrato que el orquestador debe respetar para que el parsing del orchestrator_node funcione.
+# Los escenarios están ordenados por especificidad decreciente: el flujo dinámico (Escenario 1) tiene prioridad sobre el análisis técnico genérico.
 ORCHESTRATOR_SYSTEM_PROMPT = """
 Eres SecMate, el orquestador inteligente de un sistema autónomo de ciberseguridad.
 Tu misión es clasificar la intención del usuario y dirigir el flujo de la conversación.
@@ -46,6 +47,11 @@ FORMATO DE RESPUESTA OBLIGATORIO:
 [DESTINO] :: [PREGUNTA_REFINADA_O_RESPUESTA]
 """
 
+
+# Estructura el razonamiento en dos pasos explícitos. 
+# El Paso 1 clasifica el contexto en tres escenarios mutuamente excluyentes (comando técnico, mensaje sospechoso, solo texto), 
+# evitando que el modelo analice la instrucción del usuario como si fuera phishing. 
+# La regla crítica para URL desconocida en VT convierte un "error" de la herramienta en una señal de inteligencia: dominio nuevo = posible campaña de phishing reciente
 ANALYST_SYSTEM_PROMPT = """
 Eres un Analista de Inteligencia de Amenazas (CTI) y Respuesta a Incidentes (Blue Team).
 Tu objetivo es analizar evidencias y emitir un veredicto de seguridad justificado.
@@ -93,6 +99,10 @@ RESTRICCIONES:
 - NO analices la instrucción técnica del usuario como si fuera phishing.
 """
 
+
+# El Consultor se centra en explicar conceptos teóricos o prácticos de ciberseguridad, pero SOLO con la información que se le da (RAG).
+# La regla de oro es que si el concepto central de la pregunta no aparece en el contexto, el Consultor no debe intentar responder con conocimiento externo, sino admitir la limitación de su base de conocimiento. 
+# Esto evita que el modelo "imagine" respuestas y garantiza que solo se transmita información verificada por el RAG, lo cual es crucial en un entorno académico.
 CONSULTANT_RAG_PROMPT = """
 Actúa como un Profesor de Ciberseguridad de la Universidad Rey Juan Carlos (URJC).
 Tu pedagogía es: rigurosa, clara y basada en la evidencia proporcionada.
@@ -100,7 +110,7 @@ Tu pedagogía es: rigurosa, clara y basada en la evidencia proporcionada.
 OBJETIVO:
 Responder a la duda del alumno utilizando **EXCLUSIVAMENTE** el contexto académico suministrado (RAG).
 
-CONTEXTO ACADÉMICO (Tus diapositivas):
+CONTEXTO ACADÉMICO (Diapositivas y guías):
 --------------------------------------
 {context_text}
 --------------------------------------
@@ -128,6 +138,8 @@ Explicación basada en el texto...
 `comando_ejemplo`
 """
 
+
+# El Reporter se especializa en generar resúmenes ejecutivos de amenazas para reportes PDF.
 REPORTER_SYSTEM_PROMPT = """
 Actúa como un Redactor Técnico Senior de Ciberseguridad (CISO Assistant).
 Tu objetivo es transformar el historial de análisis de una amenaza en un resumen ejecutivo estructurado para un reporte PDF.
@@ -155,6 +167,8 @@ NO uses asteriscos, guiones bajos, almohadillas ni ningún símbolo Markdown den
 """
 
 
+# El Boletín de Seguridad es un resumen semanal de CVEs críticos del NIST para un canal de Telegram.
+# El prompt guía al modelo para que genere un mensaje claro, conciso y con formato adecuado para Telegram, evitando errores comunes de formato que podrían romper la presentación en la plataforma.
 BOLETIN_DE_SEGURIDAD_PROMPT = """
 Actúa como un Analista de Ciberinteligencia. Tu tarea es resumir los CVEs críticos del NIST para un canal de Telegram.
 Tus lectores son técnicos, pero necesitan lectura rápida.

@@ -21,6 +21,7 @@ from agent_graph import graph
 from tools import get_file_hash, get_new_critical_cves    # Herramienta para cálculo SHA-256 y consulta de CVEs recientes
 from prompts import BOLETIN_DE_SEGURIDAD_PROMPT 
 
+
 # ==========================================
 # 1. CONFIGURACIÓN E INICIALIZACIÓN
 # ==========================================
@@ -44,35 +45,34 @@ client = genai.Client(api_key=google_api_key)
 # Configuración del modelo de Google Gemini a emplear
 MODEL_NAME = "gemini-3-flash-preview"
 
+
 # ==========================================
 # 2. LÓGICA DE CONEXIÓN CON LA IA (PUENTE)
 # ==========================================
 
 async def process_with_graph(update: Update, text_input: str):
-    """
-    Función Puente: Conecta la interfaz de Telegram con el cerebro (LangGraph).
-    
-    Args:
-        update: Objeto de actualización de Telegram.
-        text_input: El texto que se enviará al grafo (puede ser mensaje del usuario 
-                    o un prompt sintético generado tras subir un archivo).
-    """
+    # Esta función es el nexo entre Telegram y LangGraph. 
+    # Su responsabilidad es exclusivamente de traducción: 
+    # convierte un mensaje de Telegram en una invocación del grafo y devuelve el resultado al chat.
 
     try:
-        # 1. Identificar al usuario (thread_id)
+        # 1. Identificar al usuario (thread_id), único por cada conversación de Telegram.
         chat_id = update.effective_chat.id
         user_name = update.effective_user.first_name
 
         print(f"🧠 [{user_name} - {chat_id}] Enviando al Grafo: '{text_input[:30]}...'")
         
         # 2. Configuración de Memoria para este usuario
-        # El 'thread_id' permite al grafo mantener contexto por usuario.
+        # LangGraph usa el thread_id como clave para el MemorySaver, lo que garantiza que cada usuario tenga un historial separado.
         config = {"configurable": {"thread_id": str(chat_id)}}
 
         # 3. Encapsulamos el texto en un objeto HumanMessage de LangChain
+        # LangGraph trabaja internamente con el protocolo de mensajes de LangChain, 
+        # que distingue entre HumanMessage, AIMessage y SystemMessage para construir el historial
         input_message = HumanMessage(content=text_input)
         
-        # 4. Invocamos el Grafo de forma asincrona para no bloquear el bot si hay muchos usuarios
+        # 4. Invocamos el Grafo de forma asincrona para no bloquear el bot mientras espera respuesta de la IA
+        # Esto permite que varios usuarios puedan ser atendidos simultáneamente
         # Le pasamos la configuración
         final_state = await graph.ainvoke(
             {'messages': [input_message]}, 
@@ -83,8 +83,9 @@ async def process_with_graph(update: Update, text_input: str):
         raw_response = final_state['messages'][-1].content
 
         # --- GESTIÓN DE ARCHIVOS (REPORTER) ---
+        # Si la respuesta contiene la marca "FILE_GENERATED::", significa que el nodo Reporter ha generado un archivo PDF y nos ha devuelto su ruta.
         if "FILE_GENERATED::" in raw_response:
-            # Es una ruta de archivo
+            # Extraemos la ruta de archivo (FILE_GENERATED::{pdf_path})
             file_path = raw_response.split("FILE_GENERATED::")[1].strip()
 
             if os.path.exists(file_path):
@@ -108,7 +109,7 @@ async def process_with_graph(update: Update, text_input: str):
         else:
             bot_response = raw_response
 
-        # 6. Gestión de límites de Telegram (Splitter)
+        # 6. Gestión de límites de Telegram (Splitter) 
         # Telegram no permite mensajes de más de 4096 caracteres.
         max_length = 4000 
 
@@ -141,6 +142,7 @@ async def process_with_graph(update: Update, text_input: str):
         print(f"❌ Error en la ejecución del Grafo: {e}")
         await update.message.reply_text(f"⚠️ Error interno del sistema: {e}")
 
+
 # ==========================================
 # 3. MANEJADOR UNIVERSAL DE MENSAJES
 # ==========================================
@@ -152,7 +154,7 @@ async def handle_any_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     Motivo: Algunos clientes de Telegram (Desktop) envían archivos con tipos MIME 
     no estándar que los filtros específicos (filters.Document) a veces ignoran.
-    Esta función garantiza que el bot reaccione siempre.
+    Esta función garantiza que el bot reaccione siempre y no se pierda ningún mensaje.
     """
 
     # --- PROTECCIÓN CONTRA CRASHEOS ---
@@ -185,6 +187,7 @@ async def handle_any_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     print(f"⚠️ DETECTADO: Tipo no soportado ({msg})")
     await update.message.reply_text("Lo siento, mi sistema solo procesa texto o archivos para análisis.")
 
+
 # ==========================================
 # 4. LÓGICA DE PROCESAMIENTO DE ARCHIVOS
 # ==========================================
@@ -195,7 +198,7 @@ async def process_file(update: Update, file_object):
     Sigue el principio de Privacidad: Descarga -> Hash -> Borrado inmediato.
     """
 
-    # Para evitar la Race Condition en caso de que dos usuarios envien un archivo a la vez, 
+    # Para evitar la Race Condition en caso de que dos usuarios envien un archivo con el mismo nombre a la vez, 
     # añadimos el ID del usuario al nombre del archivo temporal.
     chat_id = update.effective_chat.id # Obtenemos el ID único del chat
 
@@ -250,7 +253,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text('¡Hola! Soy SecMate, tu asistente de ciberseguridad. ¿En qué puedo ayudarte hoy? Puedes enviarme archivos para su análisis o hacerme preguntas relacionadas con seguridad informática, entre otras cosas.')
 
 
-# === Sistema de alertas automáticas (NIST CVEs) ===
+# =============================================
+# 5. Sistema de alertas automáticas (NIST CVEs)
+# =============================================
 
 async def check_new_cves (context: ContextTypes.DEFAULT_TYPE):
     """
@@ -318,6 +323,7 @@ async def check_new_cves (context: ContextTypes.DEFAULT_TYPE):
     else:
         print(f"✅ Sin novedades críticas para {chat_id}.")
         # Avisamos al usuario para que sepa que el sistema está vivo
+        # sin este mensaje, el usuario no sabría si el sistema falló o si simplemente no hubo vulnerabilidades ese día.
         try:
             await context.bot.send_message(
                 chat_id=chat_id, 
@@ -331,13 +337,13 @@ async def subscribe (update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     """Comando /subscribe para activar el boletin de seguridad diario"""
     chat_id = update.effective_message.chat_id
 
-    # Limpiamos trabajos anteriores
+    # Limpiamos trabajos anteriores de el usuario
     current_jobs = context.job_queue.get_jobs_by_name(str(chat_id))
     for job in current_jobs:
         job.schedule_removal()
 
     # Programamos: Cada 24 horas (86400 segundos)
-    # first=5: La primera comprobación se hace a los 5 segundos
+    # first=5: La primera comprobación se hace a los 5 segundos de suscribirse
     context.job_queue.run_repeating(
         check_new_cves,
         interval = 86400,
