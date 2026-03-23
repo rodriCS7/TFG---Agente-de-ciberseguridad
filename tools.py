@@ -337,6 +337,6 @@ def generate_pdf_report(content_dict, filename="reporte_seguridad.pdf"):
     pdf.multi_cell(0, 8, recos)
     
     # Guardar
-    output_path = f"temp_{filename}"
+    output_path = f"/tmp/temp_{filename}"
     pdf.output(output_path)
     return output_path
