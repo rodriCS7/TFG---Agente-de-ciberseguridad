@@ -55,7 +55,14 @@ def main():
     # y evitar duplicados si el script se ejecuta múltiples veces.
     if os.path.exists(DB_PATH):
         print("🧹 Limpiando base de datos anterior para evitar redundancia...")
-        shutil.rmtree(DB_PATH)
+        # En Docker, no podemos borrar el punto de montaje raíz. 
+        # Por tanto, vaciamos su contenido archivo por archivo.
+        for item in os.listdir(DB_PATH):
+            item_path = os.path.join(DB_PATH, item)
+            if os.path.isfile(item_path):
+                os.remove(item_path)
+            elif os.path.isdir(item_path):
+                shutil.rmtree(item_path)
 
     # 4. MODELADO (EMBEDDINGS)
     # Inicializamos el modelo de lenguaje local.

@@ -1,4 +1,5 @@
 import os
+import subprocess
 from dotenv import load_dotenv
 from datetime import datetime
 
@@ -44,6 +45,33 @@ client = genai.Client(api_key=google_api_key)
 
 # Configuración del modelo de Google Gemini a emplear
 MODEL_NAME = os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview')  # Permite configurar el modelo desde .env, con un valor por defecto.
+
+
+# --- FUNCIÓN DE AUTO-INGESTA RAG ---
+def init_rag_database():
+    # Comprueba si la base de datos vectorial está vacía. 
+    # Si lo está, y hay PDFs en la carpeta de datos, lanza la ingesta automáticamente.
+    
+    db_path = "./chroma_db"
+    data_path = "./data"
+    
+    # 1. Comprobamos si chroma_db no existe o está vacía
+    if not os.path.exists(db_path) or not os.listdir(db_path):
+        print("⚠️ Base de conocimiento (chroma_db) vacía o no encontrada.")
+        
+        # 2. Comprobamos si el usuario ha puesto algún PDF en la carpeta data
+        if os.path.exists(data_path) and any(f.endswith('.pdf') for f in os.listdir(data_path)):
+            print("📚 Se han detectado documentos en la carpeta /data. Iniciando ingesta automática...")
+            try:
+                # Ejecutamos el script ingest.py de forma programática
+                subprocess.run(["python", "ingest.py"], check=True)
+                print("✅ Ingesta completada con éxito. Base de conocimiento lista.")
+            except subprocess.CalledProcessError as e:
+                print(f"❌ Error durante la ingesta automática: {e}")
+        else:
+            print("ℹ️ No se encontraron archivos PDF en /data. El bot arrancará sin contexto RAG.")
+    else:
+        print("✅ Base de conocimiento RAG detectada y lista para usarse.")
 
 
 # ==========================================
@@ -359,6 +387,10 @@ async def subscribe (update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 # 5. PUNTO DE ENTRADA (MAIN)
 # ==========================================
 if __name__ == "__main__":
+
+    # Ejecutamos la auto-ingesta RAG al arrancar el bot
+    init_rag_database()
+    
     # Construcción de la App
     app = ApplicationBuilder().token(telegram_token).build()
 

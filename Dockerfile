@@ -27,7 +27,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # 7. USUARIO SIN PRIVILEGIOS (Principio de Mínimo Privilegio)
-RUN useradd -m secmate_user
+RUN useradd -m secmate_user && \
+    mkdir -p /app/chroma_db && \
+    chown -R secmate_user:secmate_user /app
 USER secmate_user
 
 # 8. COMANDO DE ARRANQUE
