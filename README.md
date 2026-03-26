@@ -22,7 +22,7 @@ SecMate es un bot de Telegram basado en **Agentic AI** que integra análisis té
 
 El sistema implementa un grafo de estado multi-agente con **LangGraph**, donde un Orquestador central enruta las peticiones hacia agentes especializados:
 
-<img src="https://github.com/rodrics7/SecMate/blob/master/diagrama_arquitectura_SecMate.jpg" alt="Esquema de la arquitectura multi-agente de SecMate" width="100%">
+![Esquema de la arquitectura multi-agente de SecMate](diagrama_arquitectura_SecMate.jpg)
 
 - **Orquestador**: Clasifica la intención del usuario y decide el flujo de ejecución.
 - **Analista CTI**: Análisis híbrido (VirusTotal API + análisis semántico con Gemini).
