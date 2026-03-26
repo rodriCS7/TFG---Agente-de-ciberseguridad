@@ -29,64 +29,63 @@ Usuario → Telegram → Orquestador → [Analista | Consultor | Reportero]
                                    NIST NVD      (Apuntes)
 ```
 
-- **Orquestador**: Clasifica la intención del usuario y decide el flujo de ejecución
-- **Analista CTI**: Análisis híbrido (VirusTotal API + análisis semántico con Gemini)
-- **Consultor RAG**: Respuestas teóricas basadas exclusivamente en documentación local
-- **Reportero**: Genera informes PDF estructurados consolidando el contexto de la sesión
+- **Orquestador**: Clasifica la intención del usuario y decide el flujo de ejecución.
+- **Analista CTI**: Análisis híbrido (VirusTotal API + análisis semántico con Gemini).
+- **Consultor RAG**: Respuestas teóricas basadas exclusivamente en documentación local (RAG).
+- **Reportero**: Genera informes PDF estructurados consolidando el contexto de la sesión.
 
 ---
 
 ## 🚀 Despliegue rápido
 
 ### Requisitos previos
-- Docker y Docker Compose instalados
-- API Key de [Telegram BotFather](https://t.me/BotFather)
-- API Key de [Google AI Studio](https://aistudio.google.com/) (Gemini)
-- API Key de [VirusTotal](https://www.virustotal.com/) (capa gratuita)
+- Motor de contenedores **Docker** instalado.
+- API Key de [Telegram BotFather](https://t.me/BotFather).
+- API Key de [Google AI Studio](https://aistudio.google.com/) (Gemini).
+- API Key de [VirusTotal](https://www.virustotal.com/) (capa gratuita).
 
-### 1. Clonar el repositorio
+### 1. Clonar el repositorio y configurar entorno
 ```bash
 git clone https://github.com/tu-usuario/SecMate.git
 cd SecMate
+cp .env.example .env  # Editar .env con tus claves
 ```
-
-### 2. Configurar variables de entorno
-```bash
-cp .env.example .env
-# Editar .env con tus claves
-```
-
 ```env
 TELEGRAM_BOT_TOKEN=tu_token_aqui
 GOOGLE_API_KEY=tu_api_key_aqui
 VT_API_KEY=tu_api_key_aqui
 GEMINI_MODEL=modelo_llm
 ```
+
 > ⚠️ `GEMINI_MODEL` solo acepta modelos de Google Gemini 
-> (gemini-2.0-flash-preview, gemini-1.5-pro, etc.). 
+> (gemini-3.0-flash-preview, gemini-1.5-pro, etc.). 
 > Consulta los modelos disponibles en 
 > [Google AI Studio](https://aistudio.google.com/).
 
-### 3. Construir la base de conocimiento RAG
-```bash
-# Añade tus PDFs en la carpeta data/
-python ingest.py
-```
+### 2. Construir la base de conocimiento RAG
+Añade tus apuntes o manuales en formato PDF dentro de la carpeta data/.
 
-### 4. Arrancar el bot
+### 3. Arrancar el bot
 ```bash
 # Con entorno virtual
 pip install -r requirements.txt
 python SecMate.py
 
 # Con Docker (recomendado)
+
+# Construir la imagen
 docker build -t secmate .
 
-docker run \
-  -v ./data:/app/data \
-  -v ./chroma_db:/app/chroma_db \
+# Ejecutar el contenedor con volumen de persistencia
+docker run -d \
+  --name secmate \
   --env-file .env \
+  -v ./data:/app/data \
+  -v secmate_db:/app/chroma_db \
   secmate
+
+# Monitorizar el proceso de ingesta y arranque
+docker logs -f secmate
 ```
 
 ---
@@ -148,10 +147,3 @@ SecMate/
 ## 👨‍💻 Autor
 
 **Rodrigo Chivo Sánchez** · Grado en Ingeniería de la Ciberseguridad · URJC  
-Tutor: Liliana Patricia Santa Cruz
-
----
-
-## 📄 Licencia
-
-Este proyecto ha sido desarrollado con fines académicos en el marco del Trabajo de Fin de Grado de la URJC.
