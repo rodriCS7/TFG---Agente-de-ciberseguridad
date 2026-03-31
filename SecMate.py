@@ -1,6 +1,5 @@
 import os
 import tempfile
-from turtle import fd
 import anyio
 import subprocess
 from dotenv import load_dotenv
