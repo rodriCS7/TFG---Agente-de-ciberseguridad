@@ -1,4 +1,5 @@
 import os
+import tempfile
 import re
 import hashlib
 import requests
@@ -337,6 +338,13 @@ def generate_pdf_report(content_dict, filename="reporte_seguridad.pdf"):
     pdf.multi_cell(0, 8, recos)
     
     # Guardar
-    output_path = f"/tmp/temp_{filename}"
+
+    with tempfile.NamedTemporaryFile(
+        prefix="temp_",
+        suffix=f"_{filename}",
+        delete=False
+    ) as tmp:
+        output_path = tmp.name
+        
     pdf.output(output_path)
     return output_path

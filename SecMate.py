@@ -1,4 +1,5 @@
 import os
+import tempfile
 import subprocess
 from dotenv import load_dotenv
 from datetime import datetime
@@ -242,7 +243,14 @@ async def process_file(update: Update, file_object):
         
         # Ruta temporal en el servidor local
         # AÑADIMOS EL CHAT_ID PARA EVITAR RACE CONDITIONS ENTRE USUARIOS
-        download_path = f"/tmp/temp_{chat_id}_{file_name}"
+        
+        with tempfile.NamedTemporaryFile(
+            prefix=f"temp_{chat_id}_",
+            suffix=f"_{file_name}",
+            delete=False
+        ) as tmp:
+            download_path = tmp.name
+            
         await file_info.download_to_drive(download_path)
         print(f"   💾 Archivo guardado temporalmente en: {download_path}")
         
