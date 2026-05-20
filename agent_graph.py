@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 from dotenv import load_dotenv
 from typing import Annotated, Optional
 from typing_extensions import TypedDict
@@ -31,12 +32,20 @@ from langchain_huggingface import HuggingFaceEmbeddings
 # 1. CONFIGURACIÓN E INICIALIZACIÓN
 # ==========================================
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 # Carga de variables desde .env para seguridad
 load_dotenv('.env')
 google_key = os.getenv('GOOGLE_API_KEY')
 
 if not google_key:
-    print("❌ Error crítico: Faltan variables de entorno (GOOGLE_API_KEY).")
+    logging.critical("❌ Error crítico: Faltan variables de entorno (GOOGLE_API_KEY).")
     exit()
 
 # Configuración del modelo de LLM a emplear con gemini-3-flash-preview por defecto
@@ -58,7 +67,7 @@ llm = ChatGoogleGenerativeAI(
 # Instanciamos el modelo de Embeddings (Local) UNA SOLA VEZ al arrancar.
 # Esto reduce drásticamente la latencia en las consultas RAG.
 # (Usamos HuggingFaceEmbeddings para evitar problemas de cuota con Google en la capa gratuita)
-print("💾 Cargando modelo de embeddings (HuggingFace Local)...")
+logging.info("💾 Cargando modelo de embeddings (HuggingFace Local)...")
 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")    
 
 # Definición del Estado del Grafo (La "Memoria" del Bot)
@@ -113,7 +122,7 @@ def orchestrator_node(state: State):
     - Si es flujo dinámico, Reescribe la pregunta del usuario para el Consultor (Ingeniería de Prompts).
     """
 
-    print("--- 🧠 EJECUTANDO ORQUESTADOR ---")
+    logging.info("--- 🧠 EJECUTANDO ORQUESTADOR ---")
 
     # 1. Recuperar contexto de la memoria
     # Si no hay amenaza activa, usamos "Ninguna" por defecto
@@ -143,7 +152,7 @@ def orchestrator_node(state: State):
         decision = "TO_CHAT"
         refined_content = content_text.strip()
     
-    print(f"   🚦 Decisión: {decision}")
+    logging.info(f"   🚦 Decisión: {decision}")
 
     # 5. Retorno de estado
     # Si la decision es TO_CONSULTANT, guardamos la 'refined_content' en 'refined_query'
@@ -167,7 +176,7 @@ def analyst_node(state: State):
     - Incluye mecanismo de 'Graceful Degradation' (Reporte Manual) si falla la IA.
     """
 
-    print("--- 🕵️‍♂️ EJECUTANDO NODO ANALISTA ---")
+    logging.info("--- 🔍 EJECUTANDO NODO ANALISTA ---")
 
     # 1. Búsqueda del último mensaje real del usuario (ignorando mensajes de sistema)
     messages = state['messages']
@@ -189,9 +198,9 @@ def analyst_node(state: State):
 
     # Prioridad: Si hay Hash (malware) > URL (phishing) > Solo texto
     if target_hash:
-        print(f"🔍 Hash detectado: {target_hash}")
+        logging.info(f"🔍 Hash detectado: {target_hash[:10]}...")
         analysis_type = "Archivo (Malware)"
-        print("🌍 Consultando VirusTotal...")
+        logging.info("🌍 Consultando VirusTotal...")
         vt_data = check_hash_vt(target_hash)
 
         # --- LÓGICA DE DETECCIÓN ESPECÍFICA ---
@@ -215,13 +224,13 @@ def analyst_node(state: State):
         else:
             detected_topic = "Malware y archivos infectados" # Fallback genérico
             
-        print(f"🎯 Tema identificado: {detected_topic}")
+        logging.info(f"🎯 Tema identificado: {detected_topic}")
         
     elif target_url:
-        print(f"🔍 URL detectada: {target_url}")
+        logging.info(f"🔍 URL detectada: {target_url}")
         analysis_type = "URL (Sitio Web)"
         detected_topic = "Phishing y Sitios Web maliciosos"
-        print("🌍 Consultando VirusTotal")
+        logging.info("🌍 Consultando VirusTotal")
         vt_data = check_url_virustotal(target_url)  
     
     # Manejo de errores de la API externa (VirusTotal)
@@ -234,7 +243,7 @@ def analyst_node(state: State):
         
         # Si es un 404 (URL/Hash desconocido) -> continuamos con análisis semántico
         # Dejamos vt_data con el mensaje de error para que la IA lo interprete
-        print(f"⚠️ VT sin datos previos: {error_msg}. Continuando con análisis semántico...")
+        logging.warning(f"⚠️ VT sin datos previos: {error_msg}. Continuando con análisis semántico...")
 
     # 3. Preparación del Prompt para el Analista (Promt Engineering)
     full_analysis_prompt = f"""
@@ -256,7 +265,7 @@ def analyst_node(state: State):
 
     # 4. Generaración de Respuesta con Cliente Nativo (Bypass de Seguridad)
     try:
-        print(f"🤖 Correlacionando datos ({analysis_type} + Texto) con Gemini (Nativo)...")
+        logging.info(f"🤖 Correlacionando datos ({analysis_type} + Texto) con Gemini (Nativo)...")
         
         client = genai.Client(api_key=google_key)
         
@@ -288,7 +297,7 @@ def analyst_node(state: State):
     except Exception as e:
         # 5. FALLBACK MANUAL (GRACEFUL DEGRADATION)
         # Si la IA falla, generamos un reporte "feo" pero útil basado en los datos.
-        print(f"⚠️ FALLO IA ({e}). ACTIVANDO REPORTE MANUAL.")
+        logging.warning(f"⚠️  FALLO IA ({e}). ACTIVANDO REPORTE MANUAL.")
         
         malicious = vt_data.get('malicious', 0)
         total = vt_data.get('total_engines', 0) if 'total_engines' in vt_data else (malicious + vt_data.get('undetected', 0))
@@ -325,7 +334,7 @@ def consultant_node(state: State):
     conceptos de ciberseguridad sin censura.
     """
 
-    print("--- 📚 EJECUTANDO NODO CONSULTOR (RAG) ---")
+    logging.info("--- 📚 EJECUTANDO NODO CONSULTOR (RAG) ---")
     
     # 1. Recuperar pregunta
     # Si refined_query tiene contenido, se usa directamente. Esta pregunta fue reescrita por el orquestador para incluir el contexto de la amenaza activa.
@@ -333,7 +342,7 @@ def consultant_node(state: State):
     
     if state.get("refined_query"):
         user_question = state["refined_query"]
-        print(f"   ❓ Pregunta detectada por contexto: {user_question}")
+        logging.info(f"   ❓ Pregunta detectada por contexto: {user_question}")
     else:    
         messages = state['messages']
         user_question = ""
@@ -342,7 +351,7 @@ def consultant_node(state: State):
                 user_question = msg.content
                 break
             
-    print(f"   ❓ Pregunta detectada: {user_question}")
+    logging.info(f"   ❓ Pregunta detectada: {user_question}")
 
     # 2. Conectar a Base de Datos vectorial (Chroma)
     DB_PATH = "chroma_db"
@@ -375,12 +384,12 @@ def consultant_node(state: State):
             unique_sources.add(f"{filename} (Pág {page})")
         
         # Imprimimos las fuentes en consola 
-        print(f"   📚 Fuentes usadas: {', '.join(unique_sources)}")
+        logging.info(f"   📚 Fuentes usadas: {', '.join(unique_sources)}")
 
         if not context_text:
             return {"messages": [SystemMessage(content="Lo siento, no encuentro información sobre eso en tus apuntes.")]}
 
-        print("   📖 Contexto recuperado.")
+        logging.info("   📖 Contexto recuperado.")
 
         # 4. Prompt 
         # Context Injection: Inyectamos contexto y pregunta en el prompt del consultor
@@ -391,7 +400,7 @@ def consultant_node(state: State):
         )
 
         # 5. GENERACIÓN CON CLIENTE NATIVO (BYPASS DE SEGURIDAD)
-        print("🤖 Generando respuesta con Gemini (Nativo)...")
+        logging.info("🤖 Generando respuesta con Gemini (Nativo)...")
         
         client = genai.Client(api_key=google_key)
         
@@ -415,7 +424,7 @@ def consultant_node(state: State):
             raise ValueError("Respuesta vacía por filtros duros.")
 
     except Exception as e:
-        print(f"❌ Error RAG: {e}")
+        logging.error(f"❌ Error RAG: {e}")
         return {"messages": [SystemMessage(content="Lo siento, hubo un error al consultar los apuntes.")]}
 
 
@@ -426,7 +435,7 @@ def reporter_node(state: State):
     Usa el SDK de Google directamente para forzar salida JSON y evitar errores de LangChain.
     """
 
-    print("--- 📝 EJECUTANDO NODO REPORTERO ---")
+    logging.info("--- 📝 EJECUTANDO NODO REPORTERO ---")
     
     active_threat = state.get("active_threat", "Amenaza General")
     
@@ -458,7 +467,7 @@ def reporter_node(state: State):
         if not response.text:
             raise ValueError("Gemini devolvió una respuesta vacía.")
 
-        print("   🤖 JSON generado por IA...")
+        logging.info("   🤖 JSON generado por IA...")
         report_data = json.loads(response.text)
         
         # 4. Generamos el PDF físico
@@ -468,7 +477,7 @@ def reporter_node(state: State):
         
         pdf_path = generate_pdf_report(report_data, filename)
         
-        print(f"   ✅ PDF generado exitosamente: {pdf_path}")
+        logging.info(f"   ✅ PDF generado exitosamente: {pdf_path}")
         
         # 5. Retornamos señal especial para Telegram
         # Esta cadena es detectada por process_with_graph en SecMate.py, que la intercepta antes de intentar enviarla como texto y la procesa como un envío de documento
@@ -477,7 +486,7 @@ def reporter_node(state: State):
         }
 
     except Exception as e:
-        print(f"❌ Error generando reporte: {e}")
+        logging.error(f"❌ Error generando reporte: {e}")
         return {
             "messages": [AIMessage(content="Lo siento, hubo un error técnico al generar el archivo PDF.")]
         }

@@ -2,6 +2,7 @@ import os
 import tempfile
 import anyio
 import subprocess
+import logging
 from dotenv import load_dotenv
 from datetime import datetime
 
@@ -29,6 +30,14 @@ from prompts import BOLETIN_DE_SEGURIDAD_PROMPT
 # 1. CONFIGURACIÓN E INICIALIZACIÓN
 # ==========================================
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 # Cargar variables de entorno (Tokens) para no exponer secretos en el código
 load_dotenv('.env')
 telegram_token = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -36,11 +45,11 @@ google_api_key = os.getenv('GOOGLE_API_KEY')
 
 # Validación de seguridad: Sin token no podemos arrancar
 if not telegram_token:
-    print("❌ Error crítico: Falta la variable TELEGRAM_BOT_TOKEN en .env")
+    logging.critical("Falta la variable TELEGRAM_BOT_TOKEN en .env")
     exit()
 
 if not google_api_key:
-    print("❌ Error crítico: Falta la variable GOOGLE_API_KEY en .env")
+    logging.critical("Falta la variable GOOGLE_API_KEY en .env")
     exit()
 
 client = genai.Client(api_key=google_api_key)
@@ -59,21 +68,21 @@ def init_rag_database():
     
     # 1. Comprobamos si chroma_db no existe o está vacía
     if not os.path.exists(db_path) or not os.listdir(db_path):
-        print("⚠️ Base de conocimiento (chroma_db) vacía o no encontrada.")
+        logging.warning("⚠️ Base de conocimiento (chroma_db) vacía o no encontrada.")
         
         # 2. Comprobamos si el usuario ha puesto algún PDF en la carpeta data
         if os.path.exists(data_path) and any(f.endswith('.pdf') for f in os.listdir(data_path)):
-            print("📚 Se han detectado documentos en la carpeta /data. Iniciando ingesta automática...")
+            logging.info("📚 Se han detectado documentos en la carpeta /data. Iniciando ingesta automática...")
             try:
                 # Ejecutamos el script ingest.py de forma programática
                 subprocess.run(["python", "ingest.py"], check=True)
-                print("✅ Ingesta completada con éxito. Base de conocimiento lista.")
+                logging.info("✅ Ingesta completada con éxito. Base de conocimiento lista.")
             except subprocess.CalledProcessError as e:
-                print(f"❌ Error durante la ingesta automática: {e}")
+                logging.error(f"Error durante la ingesta automática: {e}")
         else:
-            print("ℹ️ No se encontraron archivos PDF en /data. El bot arrancará sin contexto RAG.")
+            logging.error("⚠️ No se encontraron archivos PDF en /data. El bot arrancará sin contexto RAG.")
     else:
-        print("✅ Base de conocimiento RAG detectada y lista para usarse.")
+        logging.info("✅ Base de conocimiento RAG detectada y lista para usarse.")
 
 
 # ==========================================
@@ -90,7 +99,7 @@ async def process_with_graph(update: Update, text_input: str):
         chat_id = update.effective_chat.id
         user_name = update.effective_user.first_name
 
-        print(f"🧠 [{user_name} - {chat_id}] Enviando al Grafo: '{text_input[:30]}...'")
+        logging.info(f"🧠 [{user_name} - {str(chat_id)[:5]}] Enviando al Grafo: '{text_input[:30]}...'")
         
         # 2. Configuración de Memoria para este usuario
         # LangGraph usa el thread_id como clave para el MemorySaver, lo que garantiza que cada usuario tenga un historial separado.
@@ -119,7 +128,7 @@ async def process_with_graph(update: Update, text_input: str):
             file_path = raw_response.split("FILE_GENERATED::")[1].strip()
 
             if os.path.exists(file_path):
-                print(f"📤 Enviando documento: {file_path}")
+                logging.info(f"📤 Enviando documento: {file_path}")
                 await update.message.reply_document(
                     document=open(file_path, 'rb'),
                     caption="📄 Aquí tienes el informe técnico solicitado."
@@ -127,6 +136,7 @@ async def process_with_graph(update: Update, text_input: str):
                 # Borramos el temporal
                 os.remove(file_path)
             else:
+                logging.error("⚠️ Error: El archivo de reporte no se pudo encontrar.")
                 await update.message.reply_text("⚠️ Error: El archivo de reporte no se pudo encontrar.")
             return # Salimos de la función porque ya respondimos al usuario con el archivo
         
@@ -152,7 +162,7 @@ async def process_with_graph(update: Update, text_input: str):
                     parse_mode=ParseMode.MARKDOWN
                 )
             except Exception as e:
-                print(f"⚠️ Error de formato Markdown ({e}). Enviando plano.")
+                logging.warning(f"⚠️ Error de formato Markdown ({e}). Enviando plano.")
                 # INTENTO B: Enviar feo (Texto Plano) - FALLBACK
                 await update.message.reply_text(bot_response)
 
@@ -169,13 +179,25 @@ async def process_with_graph(update: Update, text_input: str):
                     await update.message.reply_text(chunk)
             
     except Exception as e:
-        print(f"❌ Error en la ejecución del Grafo: {e}")
+        logging.error(f"❌ Error en la ejecución del Grafo: {e}")
         await update.message.reply_text(f"⚠️ Error interno del sistema: {e}")
 
 
 # ==========================================
 # 3. MANEJADOR UNIVERSAL DE MENSAJES
 # ==========================================
+
+# Constantes de validación
+MAX_TEXT_LENGTH = 2000      # caracteres
+MAX_FILE_SIZE_MB = 10       # megabytes
+ALLOWED_MIME_TYPES = {
+    'application/pdf',
+    'application/x-executable',
+    'application/octet-stream',
+    'text/plain',
+    'application/x-msdownload',
+    'application/vnd.microsoft.portable-executable'
+}
 
 async def handle_any_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -189,6 +211,7 @@ async def handle_any_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # --- PROTECCIÓN CONTRA CRASHEOS ---
     # Si update.message es None (ej: Edición de mensaje), lo ignoramos
+
     if not update.message:
         return
     
@@ -196,25 +219,46 @@ async def handle_any_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     # CASO A: El usuario envió un DOCUMENTO (PDF, TXT, EXE, etc.)
     if msg.document:
-        print("📂 DETECTADO: Documento adjunto")
-        await process_file(update, msg.document)
+        doc = msg.document
+
+        # Validación de tamaño
+        size_mb = doc.file_size / (1024 * 1024)
+        if size_mb > MAX_FILE_SIZE_MB:
+            logging.warning("Archivo rechazado: tamaño %.1f MB supera límite", size_mb)
+            await msg.reply_text(f"⚠️ El archivo supera el límite de {MAX_FILE_SIZE_MB} MB.")
+            return
+
+        # Validación de tipo MIME
+        if doc.mime_type not in ALLOWED_MIME_TYPES:
+            logging.warning("Archivo rechazado: MIME type '%s' no permitido", doc.mime_type)
+            await msg.reply_text("⚠️ Tipo de archivo no soportado para análisis.")
+            return
+        
+        logging.info("📂 DETECTADO: Documento adjunto")
+        await process_file(update, doc)
         return
 
     # CASO B: El usuario envió una FOTO (Imagen comprimida)
     if msg.photo:
-        print("📸 DETECTADO: Foto/Imagen")
-        # Telegram envía varias versiones de la foto. msg.photo[-1] es la de mayor calidad.
-        await process_file(update, msg.photo[-1])
+        logging.info("📸 DETECTADO: Foto/Imagen")
+        logging.warning("Archivo rechazado: SecMate todavía no procesa imágenes. Solo documentos.")
+        await msg.reply_text("⚠️ Tipo de archivo no soportado para análisis, SecMate todavía no procesa imágenes.")
         return
 
     # CASO C: El usuario envió TEXTO plano
     if msg.text:
-        print(f"📩 DETECTADO: Texto -> {msg.text}")
+        # Validación de longitud
+        if len(msg.text) > MAX_TEXT_LENGTH:
+            logging.warning("Mensaje rechazado: longitud %d caracteres supera el límite", len(msg.text))
+            await msg.reply_text(f"⚠️ El mensaje supera el límite de {MAX_TEXT_LENGTH} caracteres.")
+            return
+        
+        logging.info(f"📩 DETECTADO: Texto -> {msg.text}")
         await process_with_graph(update, msg.text)
         return
 
     # CASO D: Tipo desconocido (Audio, Sticker, Ubicación...)
-    print(f"⚠️ DETECTADO: Tipo no soportado ({msg})")
+    logging.warning(f"⚠️ DETECTADO: Tipo no soportado ({msg})")
     await update.message.reply_text("Lo siento, mi sistema solo procesa texto o archivos para análisis.")
 
 
@@ -256,12 +300,12 @@ async def process_file(update: Update, file_object):
         await anyio.to_thread.run_sync(lambda: os.close(fd))
 
         await file_info.download_to_drive(download_path)
-        print(f"   💾 Archivo guardado temporalmente en: {download_path}")
+        logging.info(f"   💾 Archivo guardado temporalmente en: {download_path}")
         
         # 2. Calcular HUELLA DIGITAL (Hash SHA-256)
-        # Esto es clave: No enviamos el archivo a la nube, enviamos su hash.
+        # No enviamos el archivo a la nube, enviamos su hash.
         file_hash = get_file_hash(download_path)
-        print(f"   🔑 Hash SHA-256: {file_hash}")
+        logging.info(f"   🔑 Hash SHA-256: {str(file_hash)[:10]}... Consultando VT")
         
         # 3. LIMPIEZA (Privacidad)
         # Borramos el archivo del disco inmediatamente después de calcular el hash.
@@ -281,7 +325,7 @@ async def process_file(update: Update, file_object):
             await status_msg.edit_text("❌ Error: No se pudo generar el hash del archivo.")
 
     except Exception as e:
-        print(f"❌ Error procesando archivo: {e}")
+        logging.error(f"❌ Error procesando archivo: {e}")
         # Aseguramos limpieza incluso si hay error
         if download_path and os.path.exists(download_path):
             os.remove(download_path)
@@ -308,7 +352,7 @@ async def check_new_cves (context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     chat_id = job.data or job.chat_id
     
-    print(f"⏰ Ejecutando escaneo de vulnerabilidades para chat {chat_id}...")
+    logging.info(f"⏰ Ejecutando escaneo de vulnerabilidades para chat {chat_id}...")
 
     # 1. Buscamos datos crudos del NIST
     new_cves_text = get_new_critical_cves()
@@ -317,7 +361,7 @@ async def check_new_cves (context: ContextTypes.DEFAULT_TYPE):
     fecha_actual = datetime.now().strftime("%d/%m/%Y")
     
     if new_cves_text:
-        print("   🆕 Nuevas vulnerabilidades críticas encontradas.")
+        logging.info("   🆕 Nuevas vulnerabilidades críticas encontradas.")
         
         # 2. Formateamos el prompt 
         formatted_prompt = BOLETIN_DE_SEGURIDAD_PROMPT.format(
@@ -352,16 +396,16 @@ async def check_new_cves (context: ContextTypes.DEFAULT_TYPE):
                     parse_mode=ParseMode.MARKDOWN
                 )
             except Exception as telegram_error:
-                print(f"⚠️ Falló el Markdown ({telegram_error}). Enviando plano.")
+                logging.warning(f"⚠️ Falló el Markdown ({telegram_error}). Enviando plano.")
                 await context.bot.send_message(
                     chat_id=chat_id, 
                     text=bot_response
                 )
 
         except Exception as e:
-            print(f"❌ Error conectando con Gemini: {e}")
+            logging.error(f"❌ Error conectando con Gemini: {e}")
     else:
-        print(f"✅ Sin novedades críticas para {chat_id}.")
+        logging.info(f"✅ Sin novedades críticas para {chat_id}.")
         # Avisamos al usuario para que sepa que el sistema está vivo
         # sin este mensaje, el usuario no sabría si el sistema falló o si simplemente no hubo vulnerabilidades ese día.
         try:
@@ -370,7 +414,7 @@ async def check_new_cves (context: ContextTypes.DEFAULT_TYPE):
                 text="✅ Escaneo diario completado: Sin nuevas vulnerabilidades críticas en el NIST hoy."
             )
         except Exception as e:
-            print(f"Error enviando confirmación vacía: {e}")
+            logging.error(f"❌ Error enviando confirmación vacía: {e}")
 
 
 async def subscribe (update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -415,6 +459,6 @@ if __name__ == "__main__":
     # Esto asegura que NINGÚN mensaje se pierda.
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_any_message))
     
-    print("🤖 SecMate está escuchando...")
+    logging.info("🤖 SecMate está escuchando...")
     # Bucle infinito de escucha (Polling)
     app.run_polling()
